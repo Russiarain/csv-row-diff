@@ -78,9 +78,8 @@ pub fn split_headers(input: &str) -> Vec<String> {
 /// `9:59:59` and `10:00:00` are ordered by time of day, not raw text. Dated
 /// timestamps such as `2024-01-01T09:59:59` are ordered by date and time.
 /// Unrecognized values fall back to byte order. When either bound is set, rows
-/// outside the window are not logged and a per-column summary is written after
-/// the scan. The file is assumed to be non-decreasing in time; a backward step
-/// disables the early stop at `to`.
+/// outside the window are not logged. The file is assumed to be non-decreasing
+/// in time; a backward step disables the early stop at `to`.
 #[derive(Debug, Clone, Default)]
 pub struct LogOptions {
     /// Header names to watch, in report order. `None` means all data columns.
@@ -309,13 +308,6 @@ fn select_named<W: Write>(
     Ok(watched)
 }
 
-struct ColumnSummary {
-    changes: u64,
-    entry: Vec<u8>,
-    exit: Vec<u8>,
-    seen: bool,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WindowPos {
     Before,
@@ -338,15 +330,6 @@ where
     let mut record = ByteRecord::new();
     // Only the watched cells are retained, and only the previous row of them.
     let mut previous: Vec<Vec<u8>> = Vec::with_capacity(watched.len());
-    let mut summaries = watched
-        .iter()
-        .map(|_| ColumnSummary {
-            changes: 0,
-            entry: Vec::new(),
-            exit: Vec::new(),
-            seen: false,
-        })
-        .collect::<Vec<_>>();
     let mut warned_short_row = false;
     let mut warned_backward_time = false;
     let mut stop_at_end = to.is_some();
@@ -377,16 +360,11 @@ where
 
         let parsed_time = parse_time(time);
         if previous.is_empty() {
-            for (column, summary) in watched.iter().zip(summaries.iter_mut()) {
+            for column in watched {
                 let value = field_at(&record, column.index, line, &mut warned_short_row, output)?;
-                if pos == WindowPos::Inside {
-                    if !options.no_init {
-                        write_init(output, &column.name, value)?;
-                        logged_init = true;
-                    }
-                    summary.entry.extend_from_slice(value);
-                    summary.exit.extend_from_slice(value);
-                    summary.seen = true;
+                if pos == WindowPos::Inside && !options.no_init {
+                    write_init(output, &column.name, value)?;
+                    logged_init = true;
                 }
                 previous.push(value.to_vec());
                 held_since.push(parsed_time);
@@ -419,24 +397,6 @@ where
                 }
                 logged_init = true;
             }
-            for (index, summary) in summaries.iter_mut().enumerate() {
-                let current = changed
-                    .iter()
-                    .find(|change| change.index == index)
-                    .map(|change| change.after.as_slice())
-                    .unwrap_or(previous[index].as_slice());
-                if !summary.seen {
-                    summary.entry.extend_from_slice(&previous[index]);
-                    summary.seen = true;
-                }
-                if changed.iter().any(|change| change.index == index) {
-                    summary.changes += 1;
-                    summary.exit.clear();
-                    summary.exit.extend_from_slice(current);
-                } else if summary.exit.is_empty() && summary.changes == 0 {
-                    summary.exit.extend_from_slice(current);
-                }
-            }
             log_changes_on_row(output, line, time, watched, &previous, &changed)?;
         }
 
@@ -450,9 +410,6 @@ where
         }
     }
 
-    if options.window_active() {
-        write_summary(output, options, watched, &summaries)?;
-    }
     Ok(())
 }
 
@@ -692,53 +649,6 @@ fn field_at<'a, W: Write>(
             Ok(b"")
         }
     }
-}
-
-fn write_summary<W: Write>(
-    output: &mut W,
-    options: &LogOptions,
-    watched: &[Watched],
-    summaries: &[ColumnSummary],
-) -> Result<(), LogError> {
-    write!(output, "{BOLD}{CYAN}SUMMARY{RESET} {DIM}[")?;
-    match &options.from {
-        Some(from) => write_cell(output, from.as_bytes())?,
-        None => write!(output, "start")?,
-    }
-    write!(output, ", ")?;
-    match &options.to {
-        Some(to) => write_cell(output, to.as_bytes())?,
-        None => write!(output, "end")?,
-    }
-    writeln!(output, "]{RESET}")?;
-
-    if summaries.iter().all(|summary| !summary.seen) {
-        writeln!(output, "\t{YELLOW}no rows in the window{RESET}")?;
-        return Ok(());
-    }
-
-    for (column, summary) in watched.iter().zip(summaries) {
-        write!(output, "\t{BOLD}")?;
-        write_cell(output, column.name.as_bytes())?;
-        write!(output, "{RESET}: ")?;
-        if summary.changes == 0 {
-            write!(output, "{DIM}unchanged{RESET}, {GREEN}")?;
-            write_cell(output, &summary.exit)?;
-            writeln!(output, "{RESET}")?;
-        } else {
-            let label = if summary.changes == 1 {
-                "change"
-            } else {
-                "changes"
-            };
-            write!(output, "{YELLOW}{} {label}{RESET}, {RED}", summary.changes)?;
-            write_cell(output, &summary.entry)?;
-            write!(output, "{RESET} {DIM}->{RESET} {GREEN}")?;
-            write_cell(output, &summary.exit)?;
-            writeln!(output, "{RESET}")?;
-        }
-    }
-    Ok(())
 }
 
 fn write_warn_header<W: Write>(output: &mut W) -> Result<(), LogError> {
@@ -1170,7 +1080,7 @@ INIT temp = a
     }
 
     #[test]
-    fn incident_window_logs_only_inside_rows_and_summarizes() {
+    fn incident_window_logs_only_inside_rows() {
         let csv = "\
 time,speed,temp
 2024-01-01T00:00:00,10,21
@@ -1195,9 +1105,6 @@ INIT temp = 21
 \t* speed 10 -> 12 held 2s
 \t* temp 21 -> 22 held 2s
 [L5, 2024-01-01T00:00:03] temp 22 -> 23 held 1s
-SUMMARY [2024-01-01T00:00:02, 2024-01-01T00:00:03]
-\tspeed: 1 change, 10 -> 12
-\ttemp: 2 changes, 21 -> 23
 "
         );
         assert!(text.contains("INIT speed = 10"));
@@ -1237,8 +1144,6 @@ time,speed
             "\
 [L4, 10:00:00] speed 1 -> 2 held 2s
 [L5, 10:00:01] speed 2 -> 3 held 1s
-SUMMARY [9:59:59, 10:00:01]
-\tspeed: 2 changes, 1 -> 3
 "
         );
     }
