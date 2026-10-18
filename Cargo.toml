@@ -9,6 +9,7 @@ name = "csv-row-diff"
 path = "src/main.rs"
 
 [dependencies]
+colored = "3.1.1"
 csv = "1.4"
 
 [profile.release]

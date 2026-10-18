@@ -2,16 +2,8 @@ use std::cmp::Ordering;
 use std::io::{self, BufWriter, Read, Write};
 use std::time::Duration;
 
+use colored::Colorize;
 use csv::{ByteRecord, Reader, ReaderBuilder};
-
-const RESET: &str = "\u{1b}[0m";
-const BOLD: &str = "\u{1b}[1m";
-const DIM: &str = "\u{1b}[2m";
-const RED: &str = "\u{1b}[31m";
-const GREEN: &str = "\u{1b}[32m";
-const YELLOW: &str = "\u{1b}[33m";
-const BLUE: &str = "\u{1b}[34m";
-const CYAN: &str = "\u{1b}[36m";
 
 const READ_BUFFER_BYTES: usize = 1024 * 1024;
 const WRITE_BUFFER_BYTES: usize = 64 * 1024;
@@ -212,11 +204,11 @@ fn select_all<W: Write>(
             continue;
         }
         if excluded.iter().any(|existing: &String| existing == name) {
-            write!(output, "{BOLD}{YELLOW}WARN{RESET} header ")?;
+            write_warn_header(output)?;
             write_quoted(output, name.as_bytes())?;
             writeln!(
                 output,
-                " was excluded more than once; ignoring the duplicate{RESET}"
+                " was excluded more than once; ignoring the duplicate"
             )?;
             continue;
         }
@@ -224,12 +216,12 @@ fn select_all<W: Write>(
         if csv_headers.iter().skip(1).any(|header| header == name) {
             continue;
         }
-        write!(output, "{BOLD}{YELLOW}WARN{RESET} header ")?;
+        write_warn_header(output)?;
         write_quoted(output, name.as_bytes())?;
         if csv_headers.first().is_some_and(|header| header == name) {
-            writeln!(output, " is the time column and is never watched{RESET}")?;
+            writeln!(output, " is the time column and is never watched")?;
         } else {
-            writeln!(output, " does not exist in the CSV file{RESET}")?;
+            writeln!(output, " does not exist in the CSV file")?;
         }
     }
 
@@ -244,11 +236,11 @@ fn select_all<W: Write>(
             continue;
         }
         if seen.iter().any(|existing: &String| existing == name) {
-            write!(output, "{BOLD}{YELLOW}WARN{RESET} header ")?;
+            write_warn_header(output)?;
             write_quoted(output, name.as_bytes())?;
             writeln!(
                 output,
-                " occurs more than once in the CSV; watching the first column only{RESET}"
+                " occurs more than once in the CSV; watching the first column only"
             )?;
             continue;
         }
@@ -276,12 +268,9 @@ fn select_named<W: Write>(
             continue;
         }
         if seen.iter().any(|existing: &String| existing == name) {
-            write!(output, "{BOLD}{YELLOW}WARN{RESET} header ")?;
+            write_warn_header(output)?;
             write_quoted(output, name.as_bytes())?;
-            writeln!(
-                output,
-                " was provided more than once; watching it once{RESET}"
-            )?;
+            writeln!(output, " was provided more than once; watching it once")?;
             continue;
         }
         seen.push(name.to_string());
@@ -295,17 +284,17 @@ fn select_named<W: Write>(
 
         match matches.as_slice() {
             [] => {
-                write!(output, "{BOLD}{YELLOW}WARN{RESET} header ")?;
+                write_warn_header(output)?;
                 write_quoted(output, name.as_bytes())?;
-                writeln!(output, " does not exist in the CSV file{RESET}")?;
+                writeln!(output, " does not exist in the CSV file")?;
             }
             [index, extra @ ..] => {
                 if !extra.is_empty() {
-                    write!(output, "{BOLD}{YELLOW}WARN{RESET} header ")?;
+                    write_warn_header(output)?;
                     write_quoted(output, name.as_bytes())?;
                     writeln!(
                         output,
-                        " occurs more than once in the CSV; watching the first column ({}){RESET}",
+                        " occurs more than once in the CSV; watching the first column ({})",
                         index + 1
                     )?;
                 }
@@ -692,9 +681,11 @@ fn field_at<'a, W: Write>(
         Some(value) => Ok(value),
         None => {
             if !*warned_short_row {
-                writeln!(
+                write_warn(
                     output,
-                    "{BOLD}{YELLOW}WARN{RESET} row at line {line} has fewer columns than a watched header; missing cells are treated as empty{RESET}"
+                    &format!(
+                        "row at line {line} has fewer columns than a watched header; missing cells are treated as empty"
+                    ),
                 )?;
                 *warned_short_row = true;
             }
@@ -750,17 +741,22 @@ fn write_summary<W: Write>(
     Ok(())
 }
 
+fn write_warn_header<W: Write>(output: &mut W) -> Result<(), LogError> {
+    write!(output, "{} header ", "WARN".bold().yellow())?;
+    Ok(())
+}
+
 fn write_warn<W: Write>(output: &mut W, message: &str) -> Result<(), LogError> {
-    writeln!(output, "{BOLD}{YELLOW}WARN{RESET} {message}{RESET}")?;
+    writeln!(output, "{} {message}", "WARN".bold().yellow())?;
     Ok(())
 }
 
 fn write_init<W: Write>(output: &mut W, header: &str, value: &[u8]) -> Result<(), LogError> {
-    write!(output, "{BOLD}{CYAN}INIT{RESET} {BOLD}")?;
-    write_cell(output, header.as_bytes())?;
-    write!(output, "{RESET} = {GREEN}")?;
-    write_cell(output, value)?;
-    writeln!(output, "{RESET}")?;
+    write!(output, "{} ", "INIT".bold().cyan())?;
+    write!(output, "{}", escape_cell(header.as_bytes()).bold())?;
+    write!(output, " = ")?;
+    write!(output, "{}", escape_cell(value).green())?;
+    writeln!(output)?;
     Ok(())
 }
 
@@ -781,12 +777,11 @@ fn write_single_change<W: Write>(
 }
 
 fn write_change_header<W: Write>(output: &mut W, line: u64, time: &[u8]) -> Result<(), LogError> {
-    write!(
-        output,
-        "{DIM}[{RESET}{BLUE}L{line}{RESET}{DIM}, {RESET}{CYAN}"
-    )?;
-    write_cell(output, time)?;
-    write!(output, "{RESET}{DIM}]{RESET}")?;
+    write!(output, "{}", "[".dimmed())?;
+    write!(output, "{}", format!("L{line}").blue())?;
+    write!(output, "{}", ", ".dimmed())?;
+    write!(output, "{}", escape_cell(time).cyan())?;
+    write!(output, "{}", "]".dimmed())?;
     Ok(())
 }
 
@@ -797,7 +792,7 @@ fn write_change_item<W: Write>(
     after: &[u8],
     held: Option<Duration>,
 ) -> Result<(), LogError> {
-    write!(output, "\t{DIM}*{RESET} ")?;
+    write!(output, "\t{} ", "*".dimmed())?;
     write_delta(output, header, before, after, held)?;
     writeln!(output)?;
     Ok(())
@@ -810,42 +805,49 @@ fn write_delta<W: Write>(
     after: &[u8],
     held: Option<Duration>,
 ) -> Result<(), LogError> {
-    write!(output, "{BOLD}")?;
-    write_cell(output, header.as_bytes())?;
-    write!(output, "{RESET} {RED}")?;
-    write_cell(output, before)?;
-    write!(output, "{RESET} {DIM}->{RESET} {GREEN}")?;
-    write_cell(output, after)?;
+    write!(output, "{}", escape_cell(header.as_bytes()).bold())?;
+    write!(output, " ")?;
+    write!(output, "{}", escape_cell(before).red())?;
+    write!(output, " {} ", "->".dimmed())?;
+    write!(output, "{}", escape_cell(after).green())?;
     if let Some(held) = held {
-        write!(output, "{RESET} {DIM}held ")?;
-        write_duration(output, held)?;
+        write!(
+            output,
+            " {}",
+            format!("held {}", format_duration(held)).dimmed()
+        )?;
     }
-    write!(output, "{RESET}")?;
     Ok(())
 }
 
-fn write_duration<W: Write>(output: &mut W, duration: Duration) -> Result<(), LogError> {
+fn format_duration(duration: Duration) -> String {
+    let mut output = String::new();
+    write_duration(&mut output, duration);
+    output
+}
+
+fn write_duration(output: &mut String, duration: Duration) {
     let nanos = duration.subsec_nanos();
     let total_secs = duration.as_secs();
     if total_secs == 0 {
         if nanos == 0 {
-            write!(output, "0s")?;
+            output.push_str("0s");
         } else if nanos.is_multiple_of(1_000_000) {
-            write!(output, "{}ms", nanos / 1_000_000)?;
+            output.push_str(&format!("{}ms", nanos / 1_000_000));
         } else if nanos.is_multiple_of(1_000) {
-            write!(output, "{}us", nanos / 1_000)?;
+            output.push_str(&format!("{}us", nanos / 1_000));
         } else {
-            write!(output, "{nanos}ns")?;
+            output.push_str(&format!("{nanos}ns"));
         }
-        return Ok(());
+        return;
     }
     if total_secs < 60 {
         if nanos == 0 {
-            write!(output, "{total_secs}s")?;
+            output.push_str(&format!("{total_secs}s"));
         } else {
-            write!(output, "{total_secs}.{:03}s", nanos / 1_000_000)?;
+            output.push_str(&format!("{total_secs}.{:03}s", nanos / 1_000_000));
         }
-        return Ok(());
+        return;
     }
 
     let days = total_secs / 86_400;
@@ -853,13 +855,12 @@ fn write_duration<W: Write>(output: &mut W, duration: Duration) -> Result<(), Lo
     let mins = (total_secs % 3_600) / 60;
     let secs = total_secs % 60;
     if days > 0 {
-        write!(output, "{days}d")?;
+        output.push_str(&format!("{days}d"));
     }
     if days > 0 || hours > 0 {
-        write!(output, "{hours}h")?;
+        output.push_str(&format!("{hours}h"));
     }
-    write!(output, "{mins}m{secs}s")?;
-    Ok(())
+    output.push_str(&format!("{mins}m{secs}s"));
 }
 
 fn duration_between(start: ParsedTime, end: ParsedTime) -> Option<Duration> {
@@ -904,24 +905,22 @@ fn days_from_civil(date: u32) -> Option<i64> {
     Some(i64::from(era) * 146_097 + i64::from(day_of_era) - 719_468)
 }
 
-fn write_cell<W: Write>(output: &mut W, bytes: &[u8]) -> Result<(), LogError> {
+fn escape_cell(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
+    let mut escaped = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {
-            '\\' => output.write_all(br"\\")?,
-            '\n' => output.write_all(br"\n")?,
-            '\r' => output.write_all(br"\r")?,
-            '\t' => output.write_all(br"\t")?,
+            '\\' => escaped.push_str(r"\\"),
+            '\n' => escaped.push_str(r"\n"),
+            '\r' => escaped.push_str(r"\r"),
+            '\t' => escaped.push_str(r"\t"),
             c if c.is_control() => {
-                write!(output, "\\u{{{:04x}}}", u32::from(c))?;
+                escaped.push_str(&format!("\\u{{{:04x}}}", u32::from(c)));
             }
-            c => {
-                let mut buf = [0u8; 4];
-                output.write_all(c.encode_utf8(&mut buf).as_bytes())?;
-            }
+            c => escaped.push(c),
         }
     }
-    Ok(())
+    escaped
 }
 
 fn write_quoted<W: Write>(output: &mut W, bytes: &[u8]) -> Result<(), LogError> {
@@ -954,6 +953,7 @@ fn strip_bom(bytes: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use colored::Colorize;
 
     fn render(csv_text: &str, headers: &[&str]) -> Result<String, LogError> {
         let options = LogOptions {
@@ -1025,11 +1025,12 @@ INIT speed = 10
 
     #[test]
     fn colors_every_log_line() {
+        colored::control::set_override(true);
         let raw = render("time,speed\nt0,1\nt1,2\n", &["speed", "nope"]).unwrap();
-        assert!(raw.contains("\u{1b}[33m"));
-        assert!(raw.contains("\u{1b}[36m"));
-        assert!(raw.contains("\u{1b}[32m"));
-        assert!(raw.contains("\u{1b}[31m"));
+        assert!(raw.contains(&"WARN".bold().yellow().to_string()));
+        assert!(raw.contains(&"INIT".bold().cyan().to_string()));
+        assert!(raw.contains(&"1".green().to_string()));
+        assert!(raw.contains(&"1".red().to_string()));
         assert!(raw.lines().all(|line| line.contains('\u{1b}')));
     }
 

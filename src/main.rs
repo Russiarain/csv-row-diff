@@ -5,13 +5,9 @@ use std::process::ExitCode;
 
 use csv_row_diff::{LogError, LogOptions, log_changes, split_headers};
 
-const RESET: &str = "\u{1b}[0m";
-const BOLD: &str = "\u{1b}[1m";
-const RED: &str = "\u{1b}[31m";
-const CYAN: &str = "\u{1b}[36m";
+use colored::Colorize;
 
 fn main() -> ExitCode {
-    enable_ansi();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(CliError::Help) => {
@@ -27,7 +23,7 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Err(err) => {
-            let _ = writeln!(io::stderr(), "{BOLD}{RED}ERROR{RESET} {err}{RESET}");
+            let _ = writeln!(io::stderr(), "{} {err}", "ERROR".red().bold());
             ExitCode::from(1)
         }
     }
@@ -160,17 +156,17 @@ where
 
 fn usage() -> String {
     format!(
-        "{BOLD}{CYAN}csv-row-diff{RESET} logs value changes between rows of a CSV file
+"{} - logs value changes between rows of a CSV file
 
-{BOLD}USAGE{RESET}
+{}
     csv-row-diff <CSV_FILE> [HEADERS]
     csv-row-diff --file <CSV_FILE> [--headers <HEADERS> | --except <HEADERS>]
 
-{BOLD}ARGS{RESET}
+{}
     <CSV_FILE>    Path to the CSV file, or - to read from stdin
     [HEADERS]     Comma-separated header names to watch
 
-{BOLD}OPTIONS{RESET}
+{}
     -f, --file <CSV_FILE>       CSV input path
     -H, --headers <HEADERS>     Watch only these columns
     -x, --except <HEADERS>      Watch every data column except these
@@ -180,23 +176,11 @@ fn usage() -> String {
     -h, --help                  Show this help
     -V, --version               Show version
 
-The first row is the header row. Data starts on the next record.
-The first column is the row time and is included with each change.
-With no header list, every column except the time column is watched.
---headers is a whitelist and --except is a blacklist; they cannot be combined.
-Header matching is case-sensitive. Missing names are warnings.
---from and --to match clock times (9:59:59, 10:00:00) or timestamps
-(2024-01-01T09:59:59) by time, not raw text. Unrecognized values use byte order.
-A window suppresses logs outside that range and prints a per-column summary.
-Initial values are still logged unless --no-init is set; with a window they are the values held when the window starts.
-When the time column can be parsed, each change shows how long the previous value was held.
-Rows are read incrementally; a change is detected by comparing field bytes.
-
-{BOLD}EXAMPLE{RESET}
+{}
     csv-row-diff data.csv
     csv-row-diff data.csv speed,temperature
     csv-row-diff data.csv --except comment --from 2024-01-01T00:00:02 --to 2024-01-01T00:05:00 --no-init
-"
+", "csv-row-diff".blue().bold(), "USAGE".bold(), "ARGS".bold(), "OPTIONS".bold(), "EXAMPLE".bold()
     )
 }
 
@@ -221,33 +205,3 @@ impl std::fmt::Display for CliError {
         }
     }
 }
-
-/// Classic Windows consoles ignore ANSI unless virtual-terminal mode is enabled.
-#[cfg(windows)]
-fn enable_ansi() {
-    const STD_OUTPUT_HANDLE: i32 = -11;
-    const STD_ERROR_HANDLE: i32 = -12;
-    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
-
-    unsafe extern "system" {
-        fn GetStdHandle(n_std_handle: i32) -> *mut core::ffi::c_void;
-        fn GetConsoleMode(handle: *mut core::ffi::c_void, mode: *mut u32) -> i32;
-        fn SetConsoleMode(handle: *mut core::ffi::c_void, mode: u32) -> i32;
-    }
-
-    unsafe {
-        for handle_id in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-            let handle = GetStdHandle(handle_id);
-            if handle.is_null() || handle == (-1isize as *mut core::ffi::c_void) {
-                continue;
-            }
-            let mut mode = 0;
-            if GetConsoleMode(handle, &mut mode) != 0 {
-                let _ = SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-            }
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn enable_ansi() {}
